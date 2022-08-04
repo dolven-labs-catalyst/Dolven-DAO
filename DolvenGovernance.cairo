@@ -163,6 +163,67 @@ end
 # # Viewers
 
 @view
+func getProposalState{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    proposal_id : felt
+) -> (state : felt):
+    let proposal_count : felt = proposalNonce.read()
+    with_attr error_message("DolvenGovernance::getProposalState INVALID_PROPOSAL_ID"):
+        assert_nn_le(proposal_id, proposal_count)
+    end
+    let proposal_details : Proposal = proposals.read(proposal_id)
+    let (time) = get_block_timestamp()
+    let (this) = get_contract_address()
+    let dolvenValidator_address : felt = dolvenValidator.read()
+    let is_time_less_than_starttps : felt = is_le(time, proposal_details.startTimestamp)
+    let is_time_less_than_endtps : felt = is_le(time, proposal_details.endTimestamp)
+    let is_proposal_passed : felt = IDolvenValidator.isProposalPassed(dolvenValidator_address, this, proposal_details.id)
+    let is_proposal_over_grace_period : felt = ITimelockController.isProposalOverGracePeriod(this, proposal_details.id)
+    if proposal_details.isCancelled == TRUE:
+        return (CANCELLED)
+    else:
+        if is_time_less_than_starttps == 1:
+            return (PENDING)
+        else:
+            if is_time_less_than_endtps == 1:
+                return (ACTIVE)
+            else:
+                if is_proposal_passed == 0:
+                    return (FAILED)
+                else:
+                    if proposal_details.executionTime == 0:
+                        return (SUCCESS)
+                    else: 
+                        if proposal_details.isExecuted == 1:
+                            return (EXECUTED)
+                        else:
+                            if is_proposal_over_grace_period == 1:
+                                return (EXPIRED)
+                            else:
+                                return (QUEUED)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return(QUEUED)
+end
+
+
+   member creator : felt
+    member proposalType : felt
+    member startTimestamp : felt
+    member endTimestamp : felt
+    member executionTime : felt
+    member forVotes : Uint256
+    member againstVotes : Uint256
+    member isExecuted : felt
+    member isCancelled : felt
+    member strategy : felt
+    member ipfsHash : felt
+
+@view
 func returnGovernanceStrategy{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     ) -> (strategyAddress : felt):
     let strategy : felt = governanceStrategy.read()
@@ -234,17 +295,17 @@ func getProposals{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_
 end
 
 @view
-func getVotesByProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(proposal_id : felt) -> (
-    votes_len : felt, votes : Vote*
-):
+func getVotesByProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    proposal_id : felt
+) -> (votes_len : felt, votes : Vote*):
     let (votes_len, votes) = recursiveGetVotes(proposal_id, 0)
     return (votes_len, votes - votes_len * Vote.SIZE)
 end
 
 @view
-func getVotesByUser{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(user_account : felt) -> (
-    user_vote_len : felt, user_vote : Vote*
-):
+func getVotesByUser{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    user_account : felt
+) -> (user_vote_len : felt, user_vote : Vote*):
     let (user_votes_len, user_votes) = recursiveGetUserVotes(user_account, 0)
     return (user_votes_len, user_votes - user_votes_len * Vote.SIZE)
 end
@@ -269,8 +330,6 @@ func recursiveGetProposals{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, ran
     return (proposal_memory_location_len + 1, proposal_memory_location + Proposal.SIZE)
 end
 
-
-
 func recursiveGetVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     proposal_id : felt, vote_index : felt
 ) -> (votes_len : felt, votes : Vote*):
@@ -282,14 +341,12 @@ func recursiveGetVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_c
         return (0, found_votes)
     end
 
-    let (
-        vote_memory_location_len, vote_memory_location : Vote*
-    ) = recursiveGetVotes(proposal_id, vote_index + 1)
+    let (vote_memory_location_len, vote_memory_location : Vote*) = recursiveGetVotes(
+        proposal_id, vote_index + 1
+    )
     assert [vote_memory_location] = _voteDetails
     return (votes_len + 1, vote_memory_location + Vote.SIZE)
 end
-
-
 
 func recursiveGetUserVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     account_address : felt, vote_index : felt
@@ -302,13 +359,12 @@ func recursiveGetUserVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, ran
         return (0, found_votes)
     end
 
-    let (
-        vote_memory_location_len, vote_memory_location : Vote*
-    ) = recursiveGetUserVotes(proposal_id, vote_index + 1)
+    let (vote_memory_location_len, vote_memory_location : Vote*) = recursiveGetUserVotes(
+        proposal_id, vote_index + 1
+    )
     assert [vote_memory_location] = _voteDetails
     return (votes_len + 1, vote_memory_location + Vote.SIZE)
 end
-
 
 # # External Functions
 
