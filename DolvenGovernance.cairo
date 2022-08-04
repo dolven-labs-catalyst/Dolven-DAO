@@ -225,7 +225,90 @@ func returnUserVoteByProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, 
     return (vote_details)
 end
 
+@view
+func getProposals{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}() -> (
+    proposals_len : felt, proposals : Proposal*
+):
+    let (proposals_len, proposals) = recursiveGetProposals(0)
+    return (proposals_len, proposals - proposals_len * Proposal.SIZE)
+end
+
+@view
+func getVotesByProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(proposal_id : felt) -> (
+    votes_len : felt, votes : Vote*
+):
+    let (votes_len, votes) = recursiveGetVotes(proposal_id, 0)
+    return (votes_len, votes - votes_len * Vote.SIZE)
+end
+
+@view
+func getVotesByUser{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(user_account : felt) -> (
+    user_vote_len : felt, user_vote : Vote*
+):
+    let (user_votes_len, user_votes) = recursiveGetUserVotes(user_account, 0)
+    return (user_votes_len, user_votes - user_votes_len * Vote.SIZE)
+end
+
 # #recursive functions
+
+func recursiveGetProposals{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    proposal_nonce : felt
+) -> (proposals_len : felt, proposals : Proposal*):
+    alloc_locals
+    let proposal_count : felt = proposalNonce.read()
+    let (_proposalDetails : Proposal) = proposals.read(proposal_nonce)
+    if proposal_count == proposal_nonce:
+        let (found_proposals : Proposal*) = alloc()
+        return (0, found_proposals)
+    end
+
+    let (
+        proposal_memory_location_len, proposal_memory_location : Proposal*
+    ) = recursiveGetProposals(proposal_nonce + 1)
+    assert [proposal_memory_location] = _proposalDetails
+    return (proposal_memory_location_len + 1, proposal_memory_location + Proposal.SIZE)
+end
+
+
+
+func recursiveGetVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    proposal_id : felt, vote_index : felt
+) -> (votes_len : felt, votes : Vote*):
+    alloc_locals
+    let proposal_vote_count : felt = proposalCount.read()
+    let (_voteDetails : Vote) = proposalsVotes.read(proposal_id, vote_index)
+    if proposal_vote_count == vote_index:
+        let (found_votes : Vote*) = alloc()
+        return (0, found_votes)
+    end
+
+    let (
+        vote_memory_location_len, vote_memory_location : Vote*
+    ) = recursiveGetVotes(proposal_id, vote_index + 1)
+    assert [vote_memory_location] = _voteDetails
+    return (votes_len + 1, vote_memory_location + Vote.SIZE)
+end
+
+
+
+func recursiveGetUserVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    account_address : felt, vote_index : felt
+) -> (votes_len : felt, votes : Vote*):
+    alloc_locals
+    let user_vote_count : felt = userNonce.read()
+    let (_voteDetails : Vote) = userVotes.read(account_address, vote_index)
+    if user_vote_count == vote_index:
+        let (found_votes : Vote*) = alloc()
+        return (0, found_votes)
+    end
+
+    let (
+        vote_memory_location_len, vote_memory_location : Vote*
+    ) = recursiveGetUserVotes(proposal_id, vote_index + 1)
+    assert [vote_memory_location] = _voteDetails
+    return (votes_len + 1, vote_memory_location + Vote.SIZE)
+end
+
 
 # # External Functions
 
