@@ -176,8 +176,12 @@ func getProposalState{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_ch
     let dolvenValidator_address : felt = dolvenValidator.read()
     let is_time_less_than_starttps : felt = is_le(time, proposal_details.startTimestamp)
     let is_time_less_than_endtps : felt = is_le(time, proposal_details.endTimestamp)
-    let is_proposal_passed : felt = IDolvenValidator.isProposalPassed(dolvenValidator_address, this, proposal_details.id)
-    let is_proposal_over_grace_period : felt = ITimelockController.isProposalOverGracePeriod(this, proposal_details.id)
+    let is_proposal_passed : felt = IDolvenValidator.isProposalPassed(
+        dolvenValidator_address, this, proposal_details.id
+    )
+    let is_proposal_over_grace_period : felt = ITimelockController.isProposalOverGracePeriod(
+        this, proposal_details.id
+    )
     if proposal_details.isCancelled == TRUE:
         return (CANCELLED)
     else:
@@ -192,7 +196,7 @@ func getProposalState{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_ch
                 else:
                     if proposal_details.executionTime == 0:
                         return (SUCCESS)
-                    else: 
+                    else:
                         if proposal_details.isExecuted == 1:
                             return (EXECUTED)
                         else:
@@ -207,21 +211,8 @@ func getProposalState{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_ch
             end
         end
     end
-    return(QUEUED)
+    return (QUEUED)
 end
-
-
-   member creator : felt
-    member proposalType : felt
-    member startTimestamp : felt
-    member endTimestamp : felt
-    member executionTime : felt
-    member forVotes : Uint256
-    member againstVotes : Uint256
-    member isExecuted : felt
-    member isCancelled : felt
-    member strategy : felt
-    member ipfsHash : felt
 
 @view
 func returnGovernanceStrategy{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
