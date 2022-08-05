@@ -246,10 +246,10 @@ func returnproposalNonce{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range
 end
 
 @view
-func returnProposalByNonce{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}() -> (
-    proposalDetails : Proposal
-):
-    let proposal : felt = proposals.read(proposalNonce)
+func returnProposalByNonce{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    proposalNonce : felt
+) -> (proposalDetails : Proposal):
+    let proposal : Proposal = proposals.read(proposalNonce)
     return (proposal)
 end
 
@@ -363,6 +363,7 @@ end
 func createProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     _ipfsHash : felt, _proposalType : felt
 ) -> (res : proposalId):
+    ReentrancyGuard._start()
     let validor_address : felt = dolvenValidator.read()
     let (msg_sender) = get_caller_address()
     let timeLocker_address : felt = timeLocker.read()
@@ -413,6 +414,8 @@ func createProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_chec
         ipfsHash=_ipfsHash,
     )
     proposalNonce.write(nonce + 1)
+    ReentrancyGuard._end()
+
     return (nonce)
 end
 
@@ -420,6 +423,7 @@ end
 func cancelProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     _proposalId : felt
 ):
+    ReentrancyGuard._start()
     DolvenApprover.onlyApprover()
     let state : felt = getProposalState(_proposalId)
     with_attr error_message("DolvenGovernance::cancelProposal ONLY_BEFORE_EXECUTED"):
@@ -446,6 +450,8 @@ func cancelProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_chec
     proposals(proposalDetails.id, new_proposal)
 
     ProposalCancelled.emit(proposalId=proposalDetails.id)
+    ReentrancyGuard._end()
+
     return ()
 end
 
@@ -453,6 +459,7 @@ end
 func queueProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     _proposalId : felt
 ):
+    ReentrancyGuard._start()
     DolvenApprover.onlyApprover()
     let state : felt = getProposalState(_proposalId)
     with_attr error_message("DolvenGovernance::queueProposal INVALID_STATE_FOR_QUEUE"):
@@ -483,6 +490,8 @@ func queueProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check
     ProposalQueued.emit(
         proposalId=proposalDetails.id, executionTime=_executionTime, user=msg_sender
     )
+    ReentrancyGuard._end()
+
     return ()
 end
 
@@ -490,6 +499,8 @@ end
 func executeProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     _proposalId : felt
 ):
+    ReentrancyGuard._start()
+
     DolvenApprover.onlyApprover()
     let state : felt = getProposalState(_proposalId)
     with_attr error_message("DolvenGovernance::queueProposal ONLY_QUEUED_PROPOSALS"):
@@ -514,6 +525,8 @@ func executeProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_che
     proposals(proposalDetails.id, new_proposal)
 
     ProposalExecuted.emit(proposalId=proposalDetails.id)
+    ReentrancyGuard._end()
+
     return ()
 end
 
@@ -536,6 +549,7 @@ func submitVoteBySignature(proposalId : felt, support : felt, sig : (felt, felt)
     )
 
     _submitVote(msg_sender, proposalId, support)
+
     return ()
 end
 
@@ -567,6 +581,7 @@ end
 func _submitVote{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     voter : felt, proposalId : felt, support : felt
 ):
+    ReentrancyGuard._start()
     let state : felt = getProposalState(proposalId)
     with_attr error_message("DolvenGovernance::_submitVote VOTING_CLOSED"):
         assert state = ACTIVE
@@ -624,23 +639,29 @@ func _submitVote{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_p
     VoteEmitted.emit(
         proposalId=proposalDetails.id, voter=msg_sender, support=support, votingPower=_votingPower
     )
+    ReentrancyGuard._end()
     return ()
 end
 
 func _setGovernanceStrategy{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     strategy : felt
 ):
+    DolvenApprover.onlyApprover()
     governanceStrategy.write(strategy)
 end
 
 func _setDolvenValidator{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     validatorAddress : felt
 ):
+    DolvenApprover.onlyApprover()
+
     dolvenValidator.write(validatorAddress)
 end
 
 func _setExecutor{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     executor : felt
 ):
+    DolvenApprover.onlyApprover()
+
     timeLocker.write(executor)
 end
