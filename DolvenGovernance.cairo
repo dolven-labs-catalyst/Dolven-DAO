@@ -31,7 +31,6 @@ from openzeppelin.security.pausable import Pausable
 from openzeppelin.security.reentrancy_guard import ReentrancyGuard
 from Libraries.DolvenApprover import DolvenApprover
 from Interfaces.IDolvenValidator import IDolvenValidator
-from Interfaces.IDolvenVotingStrategy import IDolvenVotingStrategy
 from Interfaces.ITimelock import ITimelockController
 
 # # Storages
@@ -369,14 +368,12 @@ func createProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_chec
     let timeLocker_address : felt = timeLocker.read()
     let (current_time) = get_block_timestamp()
     let governanceStrategy_address = governanceStrategy.read()
-    let isProposalTypeValid : felt = IDolvenValidator.validateCreatorOfProposal(
-        validor_address, proposalType
-    )
+    let isProposalTypeValid : felt = IDolvenValidator.checkProposalType(proposalType)
     with_attr error_message("DolvenGovernance::createProposal PROPOSITION_CREATION_INVALID"):
         assert isProposalTypeValid = 1
     end
     let isCreatorValid : felt = IDolvenValidator.validateCreatorOfProposal(
-        validor_address, msg_sender
+        validor_address, governanceStrategy_address, msg_sender
     )
     with_attr error_message("DolvenGovernance::createProposal PROPOSITION_CREATION_INVALID"):
         assert isCreatorValid = 1
@@ -587,6 +584,7 @@ func _submitVote{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_p
         assert state = ACTIVE
     end
     let (msg_sender) = get_caller_address()
+    let dolvenValidator : felt = dolvenValidator.read()
     let proposalDetails : Proposal = proposals.read(_proposalId)
     let user_vote : Vote = userVotesForProposal.read(msg_sender, _proposalId)
     let zero_as_uint256 : Uint256 = Uint256(0, 0)
@@ -596,8 +594,8 @@ func _submitVote{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_p
     end
     let _forVotes : Uint256 = proposalDetails.forVotes
     let _againstVotes : Uint256 = proposalDetails.againstVotes
-    let _votingPower : Uint256 = IDolvenVotingStrategy.getVotingPower(
-        proposalDetails.strategy, msg_sender
+    let _votingPower : Uint256 = IDolvenValidator.getVotingPower(
+        dolvenValidator, proposalDetails.strategy, msg_sender
     )
     if support == TRUE:
         let _forVotes : Uint256 = SafeUint256.add(_forVotes, _votingPower)
