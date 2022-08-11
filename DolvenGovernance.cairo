@@ -32,6 +32,7 @@ from openzeppelin.security.reentrancy_guard import ReentrancyGuard
 from Libraries.DolvenApprover import DolvenApprover
 from Interfaces.IDolvenValidator import IDolvenValidator
 from Interfaces.ITimelock import ITimelockController
+from starkware.cairo.common.hash import hash2
 
 # # Storages
 
@@ -155,7 +156,7 @@ func constructor{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_p
     _setGovernanceStrategy(governanceStrategy)
     _setExecutor(timeLocker)
     _setDolvenValidator(validatorAddress)
-    DolvenApprover(firstSignAddress, secondSignAddress, initialApprover)
+    DolvenApprover.initializer(firstSignerAddress, secondSignerAddress, initialApprover)
     return ()
 end
 
@@ -165,6 +166,7 @@ end
 func getProposalState{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     proposal_id : felt
 ) -> (state : felt):
+    alloc_locals
     let proposal_count : felt = proposalNonce.read()
     with_attr error_message("DolvenGovernance::getProposalState INVALID_PROPOSAL_ID"):
         assert_nn_le(proposal_id, proposal_count)
@@ -210,7 +212,6 @@ func getProposalState{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_ch
             end
         end
     end
-    return (QUEUED)
 end
 
 @view
@@ -271,7 +272,7 @@ end
 @view
 func returnUserVoteByProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     user_account : felt, proposal_id : felt
-) -> (voteCount : felt):
+) -> (voteDetail : Vote):
     let vote_details : Vote = userVotesForProposal.read(user_account, proposal_id)
     return (vote_details)
 end
@@ -324,7 +325,7 @@ func recursiveGetVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_c
     proposal_id : felt, vote_index : felt
 ) -> (votes_len : felt, votes : Vote*):
     alloc_locals
-    let proposal_vote_count : felt = proposalCount.read()
+    let proposal_vote_count : felt = proposalCount.read(proposal_id)
     let (_voteDetails : Vote) = proposalsVotes.read(proposal_id, vote_index)
     if proposal_vote_count == vote_index:
         let (found_votes : Vote*) = alloc()
@@ -335,14 +336,14 @@ func recursiveGetVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_c
         proposal_id, vote_index + 1
     )
     assert [vote_memory_location] = _voteDetails
-    return (votes_len + 1, vote_memory_location + Vote.SIZE)
+    return (vote_memory_location_len + 1, vote_memory_location + Vote.SIZE)
 end
 
 func recursiveGetUserVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     account_address : felt, vote_index : felt
 ) -> (votes_len : felt, votes : Vote*):
     alloc_locals
-    let user_vote_count : felt = userNonce.read()
+    let user_vote_count : felt = userNonce.read(account_address)
     let (_voteDetails : Vote) = userVotes.read(account_address, vote_index)
     if user_vote_count == vote_index:
         let (found_votes : Vote*) = alloc()
@@ -350,10 +351,10 @@ func recursiveGetUserVotes{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, ran
     end
 
     let (vote_memory_location_len, vote_memory_location : Vote*) = recursiveGetUserVotes(
-        proposal_id, vote_index + 1
+        account_address, vote_index + 1
     )
     assert [vote_memory_location] = _voteDetails
-    return (votes_len + 1, vote_memory_location + Vote.SIZE)
+    return (vote_memory_location_len + 1, vote_memory_location + Vote.SIZE)
 end
 
 # # External Functions
@@ -361,14 +362,16 @@ end
 @external
 func createProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     _ipfsHash : felt, _proposalType : felt
-) -> (res : proposalId):
+) -> (res : felt):
     ReentrancyGuard._start()
     let validor_address : felt = dolvenValidator.read()
     let (msg_sender) = get_caller_address()
     let timeLocker_address : felt = timeLocker.read()
     let (current_time) = get_block_timestamp()
-    let governanceStrategy_address = governanceStrategy.read()
-    let isProposalTypeValid : felt = IDolvenValidator.checkProposalType(proposalType)
+    let governanceStrategy_address : felt = governanceStrategy.read()
+    let isProposalTypeValid : felt = IDolvenValidator.checkProposalType(
+        validor_address, _proposalType
+    )
     with_attr error_message("DolvenGovernance::createProposal PROPOSITION_CREATION_INVALID"):
         assert isProposalTypeValid = 1
     end
@@ -400,7 +403,7 @@ func createProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_chec
         strategy=governanceStrategy_address,
         ipfsHash=_ipfsHash,
     )
-    proposals(nonce, new_proposal)
+    proposals.write(nonce, new_proposal)
 
     ProposalCreated.emit(
         proposalId=nonce,
@@ -444,7 +447,7 @@ func cancelProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_chec
         strategy=proposalDetails.strategy,
         ipfsHash=proposalDetails.ipfsHash,
     )
-    proposals(proposalDetails.id, new_proposal)
+    proposals.write(proposalDetails.id, new_proposal)
 
     ProposalCancelled.emit(proposalId=proposalDetails.id)
     ReentrancyGuard._end()
@@ -482,7 +485,7 @@ func queueProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check
         strategy=proposalDetails.strategy,
         ipfsHash=proposalDetails.ipfsHash,
     )
-    proposals(proposalDetails.id, new_proposal)
+    proposals.write(proposalDetails.id, new_proposal)
 
     ProposalQueued.emit(
         proposalId=proposalDetails.id, executionTime=_executionTime, user=msg_sender
@@ -503,6 +506,7 @@ func executeProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_che
     with_attr error_message("DolvenGovernance::queueProposal ONLY_QUEUED_PROPOSALS"):
         assert state = QUEUED
     end
+    let (_executionTime) = get_block_timestamp()
     let (msg_sender) = get_caller_address()
     let proposalDetails : Proposal = proposals.read(_proposalId)
     let new_proposal : Proposal = Proposal(
@@ -519,7 +523,7 @@ func executeProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_che
         strategy=proposalDetails.strategy,
         ipfsHash=proposalDetails.ipfsHash,
     )
-    proposals(proposalDetails.id, new_proposal)
+    proposals.write(proposalDetails.id, new_proposal)
 
     ProposalExecuted.emit(proposalId=proposalDetails.id)
     ReentrancyGuard._end()
@@ -528,14 +532,19 @@ func executeProposal{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_che
 end
 
 @external
-func submitVote(proposalId : felt, support : felt):
+func submitVote{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    proposalId : felt, support : felt
+):
     let (msg_sender) = get_caller_address()
     _submitVote(msg_sender, proposalId, support)
     return ()
 end
 
 @external
-func submitVoteBySignature(proposalId : felt, support : felt, sig : (felt, felt)):
+func submitVoteBySignature{
+    syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr, ecdsa_ptr : SignatureBuiltin*
+}(proposalId : felt, support : felt, sig : (felt, felt)):
+    alloc_locals
     let (msg_sender) = get_caller_address()
     let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(proposalId, support)
     let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, NAME)
@@ -553,21 +562,27 @@ end
 # # Setters
 
 @external
-func setGovernanceStrategy(strategy : felt):
+func setGovernanceStrategy{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    strategy : felt
+):
     DolvenApprover.onlyApprover()
     _setGovernanceStrategy(strategy)
     return ()
 end
 
 @external
-func setDolvenValidator(validator : felt):
+func setDolvenValidator{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    validator : felt
+):
     DolvenApprover.onlyApprover()
     _setDolvenValidator(validator)
     return ()
 end
 
 @external
-func setDolvenExecutor(executor : felt):
+func setDolvenExecutor{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
+    executor : felt
+):
     DolvenApprover.onlyApprover()
     _setExecutor(executor)
     return ()
@@ -578,15 +593,16 @@ end
 func _submitVote{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     voter : felt, proposalId : felt, support : felt
 ):
+    alloc_locals
     ReentrancyGuard._start()
     let state : felt = getProposalState(proposalId)
     with_attr error_message("DolvenGovernance::_submitVote VOTING_CLOSED"):
         assert state = ACTIVE
     end
     let (msg_sender) = get_caller_address()
-    let dolvenValidator : felt = dolvenValidator.read()
-    let proposalDetails : Proposal = proposals.read(_proposalId)
-    let user_vote : Vote = userVotesForProposal.read(msg_sender, _proposalId)
+    let _dolvenValidator : felt = dolvenValidator.read()
+    let proposalDetails : Proposal = proposals.read(proposalId)
+    let user_vote : Vote = userVotesForProposal.read(msg_sender, proposalId)
     let zero_as_uint256 : Uint256 = Uint256(0, 0)
 
     with_attr error_message("DolvenGovernance::_submitVote VOTE_ALREADY_SUBMITTED"):
@@ -595,50 +611,93 @@ func _submitVote{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_p
     let _forVotes : Uint256 = proposalDetails.forVotes
     let _againstVotes : Uint256 = proposalDetails.againstVotes
     let _votingPower : Uint256 = IDolvenValidator.getVotingPower(
-        dolvenValidator, proposalDetails.strategy, msg_sender
+        _dolvenValidator, proposalDetails.strategy, msg_sender
     )
     if support == TRUE:
         let _forVotes : Uint256 = SafeUint256.add(_forVotes, _votingPower)
+
+        let _user_nonce : felt = userNonce.read(msg_sender)
+        let total_voteCount : felt = proposalCount.read(proposalId)
+
+        let new_voteDetails : Vote = Vote(
+            voteFrom=msg_sender,
+            voteProposalNonce=proposalDetails.id,
+            voteResult=support,
+            votingPower=_votingPower,
+        )
+
+        let new_proposalDetails : Proposal = Proposal(
+            id=proposalDetails.id,
+            creator=proposalDetails.creator,
+            proposalType=proposalDetails.proposalType,
+            startTimestamp=proposalDetails.startTimestamp,
+            endTimestamp=proposalDetails.endTimestamp,
+            executionTime=proposalDetails.executionTime,
+            forVotes=_forVotes,
+            againstVotes=_againstVotes,
+            isExecuted=proposalDetails.isExecuted,
+            isCancelled=proposalDetails.isCancelled,
+            strategy=proposalDetails.strategy,
+            ipfsHash=proposalDetails.ipfsHash,
+        )
+
+        userVotes.write(msg_sender, _user_nonce, new_voteDetails)
+        userVotesForProposal.write(msg_sender, proposalDetails.id, new_voteDetails)
+        proposalsVotes.write(proposalDetails.id, total_voteCount, new_voteDetails)
+        proposalCount.write(proposalDetails.id, total_voteCount + 1)
+        userNonce.write(msg_sender, _user_nonce + 1)
+
+        VoteEmitted.emit(
+            proposalId=proposalDetails.id,
+            voter=msg_sender,
+            support=support,
+            votingPower=_votingPower,
+        )
+        ReentrancyGuard._end()
+        return ()
     else:
         let _againstVotes : Uint256 = SafeUint256.add(_againstVotes, _votingPower)
+
+        let _user_nonce : felt = userNonce.read(msg_sender)
+        let total_voteCount : felt = proposalCount.read(proposalId)
+
+        let new_voteDetails : Vote = Vote(
+            voteFrom=msg_sender,
+            voteProposalNonce=proposalDetails.id,
+            voteResult=support,
+            votingPower=_votingPower,
+        )
+
+        let new_proposalDetails : Proposal = Proposal(
+            id=proposalDetails.id,
+            creator=proposalDetails.creator,
+            proposalType=proposalDetails.proposalType,
+            startTimestamp=proposalDetails.startTimestamp,
+            endTimestamp=proposalDetails.endTimestamp,
+            executionTime=proposalDetails.executionTime,
+            forVotes=_forVotes,
+            againstVotes=_againstVotes,
+            isExecuted=proposalDetails.isExecuted,
+            isCancelled=proposalDetails.isCancelled,
+            strategy=proposalDetails.strategy,
+            ipfsHash=proposalDetails.ipfsHash,
+        )
+
+        userVotes.write(msg_sender, _user_nonce, new_voteDetails)
+        userVotesForProposal.write(msg_sender, proposalDetails.id, new_voteDetails)
+        proposalsVotes.write(proposalDetails.id, total_voteCount, new_voteDetails)
+        proposalCount.write(proposalDetails.id, total_voteCount + 1)
+        userNonce.write(msg_sender, _user_nonce + 1)
+
+        VoteEmitted.emit(
+            proposalId=proposalDetails.id,
+            voter=msg_sender,
+            support=support,
+            votingPower=_votingPower,
+        )
+        ReentrancyGuard._end()
+        return ()
     end
-
-    let user_nonce : felt = userNonce.read(msg_sender)
-    let total_voteCount : felt = proposalCount.read(proposalId)
-
-    let new_voteDetails : Vote = Vote(
-        voteFrom=msg_sender,
-        voteProposalNonce=proposalDetails.id,
-        voteResult=support,
-        votingPower=_votingPower,
-    )
-
-    let new_proposalDetails : Proposal = Proposal(
-        id=proposalDetails.id,
-        creator=proposalDetails.creator,
-        proposalType=proposalDetails.proposalType,
-        startTimestamp=proposalDetails.startTimestamp,
-        endTimestamp=proposalDetails.endTimestamp,
-        executionTime=proposalDetails.executionTime,
-        forVotes=_forVotes,
-        againstVotes=_againstVotes,
-        isExecuted=proposalDetails.isExecuted,
-        isCancelled=proposalDetails.isCancelled,
-        strategy=proposalDetails.strategy,
-        ipfsHash=proposalDetails.ipfsHash,
-    )
-
-    userVotes.write(msg_sender, user_nonce, new_voteDetails)
-    userVotesForProposal.write(msg_sender, proposalDetails.id, new_voteDetails)
-    proposalsVotes.write(proposalDetails.id, total_voteCount, new_voteDetails)
-    proposalCount.write(total_voteCount + 1)
-    user_nonce.write(user_nonce + 1)
-
-    VoteEmitted.emit(
-        proposalId=proposalDetails.id, voter=msg_sender, support=support, votingPower=_votingPower
-    )
-    ReentrancyGuard._end()
-    return ()
 end
 
 func _setGovernanceStrategy{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
@@ -646,6 +705,7 @@ func _setGovernanceStrategy{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, ra
 ):
     DolvenApprover.onlyApprover()
     governanceStrategy.write(strategy)
+    return ()
 end
 
 func _setDolvenValidator{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
@@ -654,6 +714,7 @@ func _setDolvenValidator{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range
     DolvenApprover.onlyApprover()
 
     dolvenValidator.write(validatorAddress)
+    return ()
 end
 
 func _setExecutor{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
@@ -662,4 +723,5 @@ func _setExecutor{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_
     DolvenApprover.onlyApprover()
 
     timeLocker.write(executor)
+    return ()
 end
