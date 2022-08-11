@@ -185,6 +185,7 @@ end
 func isPropositionPowerEnough{syscall_ptr : felt*, pedersen_ptr : HashBuiltin*, range_check_ptr}(
     strategy : felt, user_account : felt
 ) -> (res : felt):
+    alloc_locals
     let (time) = get_block_timestamp()
     let user_ticket_count : Uint256 = IDolvenVault.get_userTicketCount(strategy, user_account, time)
     let total_locked_ticket_count : Uint256 = IDolvenVault.get_totalLockedTicket_byTime(
@@ -207,6 +208,7 @@ func getMinimumPropositionPowerNeeded{
 }(total_locked_ticket_count : Uint256) -> (res : Uint256):
     let _PROPOSITION_THRESHOLD : Uint256 = PROPOSITION_THRESHOLD.read()
     let min_value : Uint256 = SafeUint256.mul(total_locked_ticket_count, _PROPOSITION_THRESHOLD)
-    let min_value : Uint256 = SafeUint256.div_rem(min_value, ONE_HUNDRED_WITH_PRECISION)
+    let percent_base : Uint256 = felt_to_uint256(ONE_HUNDRED_WITH_PRECISION)
+    let min_value : Uint256 = SafeUint256.div_rem(min_value, percent_base)
     return (min_value)
 end
