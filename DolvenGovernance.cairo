@@ -4,6 +4,7 @@ from starkware.cairo.common.cairo_builtins import HashBuiltin, SignatureBuiltin
 from starkware.starknet.common.syscalls import (
     get_caller_address,
     get_contract_address,
+    get_tx_info,
     get_block_number,
     get_block_timestamp,
 )
@@ -79,7 +80,6 @@ struct Proposal {
     isCancelled: felt,
     strategy: felt,
 }
-
 
 
 struct Vote {
@@ -234,6 +234,42 @@ func getProposalState{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_chec
     }
 }
 
+//Proposal Execution Params
+
+@view
+func returnExecutionLength{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt) -> (
+    length: felt
+) {
+    let length: felt = proposal_execution_len.read(_proposalId);
+    return (length,);
+}
+
+
+@view
+func returnProposalTarget{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt, nonce : felt) -> (
+    target: felt
+) {
+    let target: felt = proposal_targets.read(_proposalId, nonce);
+    return (target,);
+}
+
+@view
+func returnProposalSelector{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt, nonce : felt) -> (
+    selector: felt
+) {
+    let selector: felt = proposal_selectors.read(_proposalId, nonce);
+    return (selector,);
+}
+
+@view
+func returnProposalCalldata{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt, nonce : felt) -> (
+    calldata: felt
+) {
+    let calldata: felt = proposal_calldatas.read(_proposalId, nonce);
+    return (calldata,);
+}
+
+
 @view
 func returnGovernanceStrategy{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
     ) -> (strategyAddress: felt) {
@@ -373,7 +409,7 @@ func recursiveGetUserVotes{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range
 
 @external
 func createProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-    _executor: felt, targets_len : felt, targets : felt*, selector_len : felt, selector : felt*,  calldatas_len : felt, calldatas : felt*, _ipfsHash: felt, _proposalType: felt
+    _executor: felt, targets_len : felt, targets : felt*, selector_len : felt, selector : felt*,  calldatas_len : felt, calldatas : felt*, _proposalType: felt
 ) -> (res: felt) {
     alloc_locals;
     ReentrancyGuard._start();
@@ -471,7 +507,7 @@ func cancelProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_
     );
 
     proposals.write(proposalDetails.id, new_proposal);
-    ITimelockController.cancelTransaction(proposalDetails.executor, proposalDetails.id, 0);
+    ITimelockController.cancelTransaction(proposalDetails.executor, proposalDetails.id, 0, proposalDetails.executionTime);
     
     ProposalCancelled.emit(proposalId=proposalDetails.id);
     ReentrancyGuard._end();
@@ -575,9 +611,11 @@ func submitVoteBySignature{
     syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr, ecdsa_ptr: SignatureBuiltin*
 }(proposalId: felt, support: felt, sig: (felt, felt)) {
     alloc_locals;
+    let (tx_info) = get_tx_info();
     let (msg_sender) = get_caller_address();
-    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(proposalId, support);
-    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, NAME);
+    let (__basic_hash) = hash2{hash_ptr=pedersen_ptr}(proposalId, support);
+    let (_basic_hash) = hash2{hash_ptr=pedersen_ptr}(__basic_hash, NAME);
+    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(_basic_hash, tx_info.chain_id);
 
     // reverts, if cannot resolve the signature see: https://www.cairo-lang.org/docs/hello_starknet/signature_verification.html
     verify_ecdsa_signature(
@@ -645,7 +683,7 @@ func _submitVote{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr
     }
     let _forVotes: Uint256 = proposalDetails.forVotes;
     let _againstVotes: Uint256 = proposalDetails.againstVotes;
-    let _votingPower: Uint256 = IDolvenVault.get_userTicketCount(
+    let _votingPower: Uint256 = ITimelockController.getVotingPower(
         proposalDetails.executor, proposalDetails.strategy, voter
     );
 
@@ -759,4 +797,6 @@ func authorizeExecutor{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_che
     _authorizedExecutors.write(executor, TRUE);
     return();
 }
+
+
 
