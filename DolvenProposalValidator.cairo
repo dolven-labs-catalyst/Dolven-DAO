@@ -58,9 +58,7 @@ func VOTING_TYPE() -> (res: felt) {
         _VOTE_DIFFERENTIAL: Uint256,
         _MINIMUM_QUORUM: Uint256,
         _VOTING_TYPE: felt,
-        deployer : felt
     ) {
-        Ownable.initializer(deployer);
         MINIMUM_QUORUM.write(_MINIMUM_QUORUM);
         VOTE_DIFFERENTIAL.write(_VOTE_DIFFERENTIAL);
         PROPOSITION_THRESHOLD.write(_PROPOSITION_THRESHOLD);
@@ -144,17 +142,6 @@ func VOTING_TYPE() -> (res: felt) {
         return (min_power,);
     }
 
-    // # External functions
-
-    @external
-    func changeVotingType{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        type : felt
-    ) {
-        Ownable.assert_only_owner();
-        VOTING_TYPE.write(type);
-        return();
-    }
-
     // # Internal Functions
 
     func isVoteDifferentialValid{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
@@ -193,8 +180,7 @@ func VOTING_TYPE() -> (res: felt) {
         let is_valid: felt = uint256_lt(min_votingPowerNeeded, proposal_details.forVotes);
         return (is_valid,);
     }
-    
-    @view
+
     func isPropositionPowerEnough{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
         strategy: felt, user_account: felt
     ) -> (res: felt) {
