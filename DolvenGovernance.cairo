@@ -4,7 +4,6 @@ from starkware.cairo.common.cairo_builtins import HashBuiltin, SignatureBuiltin
 from starkware.starknet.common.syscalls import (
     get_caller_address,
     get_contract_address,
-    get_tx_info,
     get_block_number,
     get_block_timestamp,
 )
@@ -82,6 +81,7 @@ struct Proposal {
 }
 
 
+
 struct Vote {
     voteFrom: felt,
     voteProposalNonce: felt,
@@ -96,19 +96,19 @@ func proposals(nonce: felt) -> (res: Proposal) {
 }
 
 @storage_var
-func proposal_execution_len(proposal_id: felt) -> (len: felt) {
+func proposal_calldatas(proposal_id: felt, exec_nonce : felt, call_data_nonce : felt) -> (res: felt) {
 }
 
 @storage_var
-func proposal_targets(proposal_id: felt, nonce : felt) -> (res: felt) {
+func proposal_calldatas_size(proposal_id: felt, exec_nonce : felt) -> (size: felt) {
 }
 
 @storage_var
-func proposal_selectors(proposal_id: felt, nonce : felt) -> (res: felt) {
+func proposal_targets(proposal_id: felt, target_nonce : felt) -> (target: felt) {
 }
 
 @storage_var
-func proposal_calldatas(proposal_id: felt, nonce : felt) -> (res: felt) {
+func proposal_selectors(proposal_id: felt, selector_nonce : felt) -> (selector: felt) {
 }
 
 @storage_var
@@ -234,41 +234,38 @@ func getProposalState{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_chec
     }
 }
 
-//Proposal Execution Params
 
 @view
-func returnExecutionLength{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt) -> (
-    length: felt
-) {
-    let length: felt = proposal_execution_len.read(_proposalId);
-    return (length,);
-}
-
-
-@view
-func returnProposalTarget{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt, nonce : felt) -> (
-    target: felt
-) {
-    let target: felt = proposal_targets.read(_proposalId, nonce);
-    return (target,);
+func return_proposal_calldatas{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    _proposal_id : felt, target_index : felt, calldata_index : felt
+) -> (res : felt) {
+    let _calldata : felt = proposal_calldatas.read(_proposal_id, target_index, calldata_index);
+    return(_calldata,);
 }
 
 @view
-func returnProposalSelector{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt, nonce : felt) -> (
-    selector: felt
-) {
-    let selector: felt = proposal_selectors.read(_proposalId, nonce);
-    return (selector,);
+func return_proposal_targets{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    _proposal_id : felt, target_index : felt
+) -> (res : felt) {
+    let target : felt = proposal_targets.read(_proposal_id, target_index);
+    return(target,);
 }
 
 @view
-func returnProposalCalldata{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_proposalId : felt, nonce : felt) -> (
-    calldata: felt
-) {
-    let calldata: felt = proposal_calldatas.read(_proposalId, nonce);
-    return (calldata,);
+func return_proposal_selectors{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    _proposal_id : felt, selector_index : felt
+) -> (res : felt) {
+    let selector : felt = proposal_selectors.read(_proposal_id, selector_index);
+    return(selector,);
 }
 
+@view
+func return_proposal_calldata_size{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    _proposal_id : felt, target_index : felt
+) -> (res : felt) {
+    let size : felt = proposal_calldatas_size.read(_proposal_id, target_index);
+    return(size,);
+}
 
 @view
 func returnGovernanceStrategy{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
@@ -409,7 +406,7 @@ func recursiveGetUserVotes{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range
 
 @external
 func createProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-    _executor: felt, targets_len : felt, targets : felt*, selector_len : felt, selector : felt*,  calldatas_len : felt, calldatas : felt*, _proposalType: felt
+    _executor: felt, targets_len : felt, targets : felt*, selectors_len : felt, selectors : felt*, calldata_array_len : felt, calldata_array : felt*, calldatas_len : felt, calldatas : felt*, _proposalType: felt
 ) -> (res: felt) {
     alloc_locals;
     ReentrancyGuard._start();
@@ -425,11 +422,11 @@ func createProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_
         assert is_proposal_valid = TRUE;
     }
     with_attr error_message("DolvenGovernance::createProposal INCONSISTENT_PARAMS_LENGTH") {
-        assert targets_len = selector_len;
+        assert targets_len = selectors_len;
     }
     
     with_attr error_message("DolvenGovernance::createProposal INCONSISTENT_PARAMS_LENGTH") {
-        assert calldatas_len = targets_len;
+        assert calldata_array_len = targets_len;
     }
 
     with_attr error_message("DolvenGovernance::createProposal EXECUTOR_NOT_AUTHORIZED") {
@@ -460,7 +457,9 @@ func createProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_
         strategy=governanceStrategy_address,
     );
     proposals.write(nonce, new_proposal);
-    processCalldata(nonce, 0, calldatas_len, calldatas, selector_len, selector, targets_len, targets);
+    proposal_calldatas_length_recursive(nonce, 0, calldata_array_len, calldata_array, calldatas);
+    proposal_target_recursive(nonce, targets_len, targets, selectors_len, selectors, 0);
+
 
     ProposalCreated.emit(
         proposalId=nonce,
@@ -507,7 +506,7 @@ func cancelProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_
     );
 
     proposals.write(proposalDetails.id, new_proposal);
-    ITimelockController.cancelTransaction(proposalDetails.executor, proposalDetails.id, 0, proposalDetails.executionTime);
+    _queueOrRevert(proposalDetails.executor, 0, proposalDetails.id, proposalDetails.executionTime, proposalDetails.execute_param_len, 0);
     
     ProposalCancelled.emit(proposalId=proposalDetails.id);
     ReentrancyGuard._end();
@@ -532,7 +531,7 @@ func queueProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_p
     let queueDelay: felt = ITimelockController.getDelay(proposalDetails.executor);
     let _executionTime: felt = current_time + queueDelay;
     
-    _queueOrRevert(proposalDetails.executor, 0, proposalDetails.id, _executionTime, proposalDetails.execute_param_len);
+    _queueOrRevert(proposalDetails.executor, 0, proposalDetails.id, _executionTime, proposalDetails.execute_param_len, 1);
     let new_proposal: Proposal = Proposal(
         id=proposalDetails.id,
         executor=proposalDetails.executor,
@@ -562,6 +561,7 @@ func queueProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_p
 func executeProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
     _proposalId: felt
 ) {
+    alloc_locals;
     ReentrancyGuard._start();
     DolvenApprover.onlyApprover();
     let state: felt = getProposalState(_proposalId);
@@ -572,7 +572,7 @@ func executeProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check
     let (msg_sender) = get_caller_address();
     let proposalDetails: Proposal = proposals.read(_proposalId);
 
-    ITimelockController.executeTransaction(proposalDetails.executor, proposalDetails.execute_param_len, 0);
+    _internalExecution(_proposalId, 0);
 
     let new_proposal : Proposal = Proposal(
         id=proposalDetails.id,
@@ -611,11 +611,9 @@ func submitVoteBySignature{
     syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr, ecdsa_ptr: SignatureBuiltin*
 }(proposalId: felt, support: felt, sig: (felt, felt)) {
     alloc_locals;
-    let (tx_info) = get_tx_info();
     let (msg_sender) = get_caller_address();
-    let (__basic_hash) = hash2{hash_ptr=pedersen_ptr}(proposalId, support);
-    let (_basic_hash) = hash2{hash_ptr=pedersen_ptr}(__basic_hash, NAME);
-    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(_basic_hash, tx_info.chain_id);
+    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(proposalId, support);
+    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, NAME);
 
     // reverts, if cannot resolve the signature see: https://www.cairo-lang.org/docs/hello_starknet/signature_verification.html
     verify_ecdsa_signature(
@@ -629,40 +627,107 @@ func submitVoteBySignature{
 
 // # Internal Functions
 
-func _queueOrRevert{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_executor : felt, index : felt, proposal_nonce : felt, executionTime : felt, loop_size : felt){
-    let _proposal_calldata : felt = proposal_calldatas.read(proposal_nonce, index);
-    let _proposal_target : felt = proposal_targets.read(proposal_nonce, index);
-    let _proposal_select : felt = proposal_selectors.read(proposal_nonce, index);
+func _internalExecution{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    _proposal_id : felt, target_index : felt
+) {
+    let (proposal_details) = proposals.read(_proposal_id);
+    let calldata_size : felt = proposal_calldatas_size.read(_proposal_id, target_index);
 
-    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(executionTime, _proposal_target);
-    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_select);
-    let (action_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_calldata);
+    if(target_index == proposal_details.execute_param_len){
+        return();
+    }
+    ITimelockController.executeTransaction(proposal_details.executor, _proposal_id, target_index, calldata_size, 0);
+    _internalExecution(_proposal_id, target_index + 1);
+    return();
+}
 
+func _queueOrRevert{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_executor : felt, index : felt, proposal_nonce : felt, executionTime : felt, loop_size : felt, type : felt){
+    let calldata_array_size : felt = proposal_calldatas_size.read(proposal_nonce, index);
+    
     if (index == loop_size){
     return();
     }
 
-    ITimelockController.isActionQueued(_executor, action_hash);
-    _queueOrRevert(_executor, index + 1, proposal_nonce, executionTime, loop_size);
+    checkHashRecursive(proposal_nonce, index, calldata_array_size, 0, executionTime, _executor, type);
+    _queueOrRevert(_executor, index + 1, proposal_nonce, executionTime, loop_size, type);
     return();
 
 }
 
-func processCalldata{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(_nonce : felt, index : felt, _calldata_len : felt, _calldata : felt* , _selector_len : felt, _selector : felt*, _targets_len : felt, _targets : felt*){
-    
-    proposal_calldatas.write(_nonce, index, [_calldata]);
-    proposal_selectors.write(_nonce, index, [_selector]);
-    proposal_targets.write(_nonce, index, [_targets]);
-    
-    if (_calldata_len == index){
+func checkHashRecursive{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+_proposal_id : felt, target_index : felt, calldata_array_size : felt, index: felt, executionTime : felt, executor : felt, type : felt
+){
+   let _proposal_target : felt = proposal_targets.read(_proposal_id, target_index);
+   let _proposal_selector : felt = proposal_selectors.read(_proposal_id, target_index);
+   let _proposal_single_calldata : felt = proposal_calldatas.read(_proposal_id, target_index, index);
+
+    if (index == calldata_array_size){
     return();
     }
-  
 
-    processCalldata(_nonce, index + 1, _calldata_len, _calldata + 1, _targets_len, _targets + 1, _selector_len, _selector + 1, );
+    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(executionTime, _proposal_target);
+    let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_selector);
+    let (action_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_single_calldata);
+   
+    if(type == 0){
+    //cancel tx
+    ITimelockController.cancelTransaction(executor, _proposal_target, _proposal_selector, _proposal_single_calldata, executionTime);
+    checkHashRecursive(_proposal_id, target_index, calldata_array_size, index + 1, executionTime, executor, type);
     return();
-
+    }
+   
+    if(type == 1){
+    // queue tx
+    let isQueued : felt = ITimelockController.isActionQueued(executor, action_hash);
+    with_attr error_message("DolvenGovernance::checkHashRecursive DUPLICATED_ACTION") {
+        assert isQueued = FALSE;
+    }
+    ITimelockController.queueTransaction(executor, _proposal_target, _proposal_selector, _proposal_single_calldata, executionTime);
+    checkHashRecursive(_proposal_id, target_index, calldata_array_size, index + 1, executionTime, executor, type);
+    return();
+    }
+    return();
 }
+
+func proposal_target_recursive{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    _proposal_id : felt, targets_len : felt, _targets : felt*, selector_len : felt, _selectors : felt*, index : felt
+) {
+
+if(index == targets_len){
+return();
+}
+
+proposal_targets.write(_proposal_id, index, [_targets]);
+proposal_selectors.write(_proposal_id, index, [_selectors]);
+proposal_target_recursive(_proposal_id, targets_len, _targets + 1, selector_len, _selectors + 1, index + 1);
+return();
+}
+
+func proposal_calldatas_length_recursive{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+_proposal_id : felt, index : felt, array_size_len : felt, array_size : felt* , calldatas : felt*){
+    
+    if(array_size_len == index){
+        return();
+    }
+
+    let current_loop_for_values : felt = [array_size]; 
+    proposal_calldatas_size.write(_proposal_id, index, current_loop_for_values);
+    double_recursive(_proposal_id, index, 0, current_loop_for_values, calldatas);
+    proposal_calldatas_length_recursive(_proposal_id, index + 1, array_size_len, array_size + 1, calldatas + current_loop_for_values);
+    return();
+}
+
+func double_recursive{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    proposal_index : felt, _target_id : felt, index : felt, data_len : felt, data : felt* 
+) {
+    if(index == data_len){
+    return();
+    }
+    proposal_calldatas.write(proposal_index, _target_id, index, [data]);
+    double_recursive(proposal_index, _target_id, index + 1, data_len, data + 1);
+    return();
+}
+
 
 
 func _submitVote{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
