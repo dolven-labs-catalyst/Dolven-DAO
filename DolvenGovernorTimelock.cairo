@@ -4,11 +4,11 @@ from starkware.cairo.common.cairo_builtins import HashBuiltin, SignatureBuiltin
 from starkware.starknet.common.syscalls import (
     get_caller_address,
     get_contract_address,
+    call_contract,
     get_block_number,
     get_block_timestamp,
-    call_contract
 )
-from starkware.cairo.common.hash import hash2
+
 from starkware.cairo.common.bool import FALSE, TRUE
 from starkware.cairo.common.alloc import alloc
 from starkware.cairo.common.math import (
@@ -22,6 +22,7 @@ from starkware.cairo.common.math import (
     unsigned_div_rem,
     signed_div_rem,
 )
+from starkware.cairo.common.hash import hash2
 from starkware.cairo.common.uint256 import Uint256, uint256_eq, uint256_le, uint256_lt
 from contracts.openzeppelin.security.safemath import SafeUint256
 from starkware.cairo.common.math_cmp import is_le, is_not_zero, is_nn, is_in_range, is_nn_le
@@ -38,7 +39,6 @@ func MAXIMUM_DELAY() -> (res: felt) {
 @storage_var
 func MINUMUM_DELAY() -> (res: felt) {
 }
-
 // Minimum time between queueing and execution of proposal
 @storage_var
 func DELAY() -> (res: felt) {
@@ -55,23 +55,28 @@ func GRACE_PERIOD() -> (res: felt) {
 @storage_var
 func GOVERNANCE_ADDRESS() -> (res: felt) {
 }
+
+@storage_var
+func QUEUED_TRANSACTIONS(action_hash : felt) -> (res: felt) {
+}
+
 // Total voting duration
 @storage_var
 func VOTING_DURATION() -> (res: felt) {
 }
 
-@storage_var
-func _queuedTransactions(action_hash : felt) -> (res: felt) {
+@event
+func CancelledAction(actionHash : felt, target : felt, data : felt) -> (){
 }
 
 @event
-func QueuedAction(actionHash: felt, target: felt, selector: felt, calldata : felt, execution_time : felt) {
+func QueuedAction(actionHash : felt, target : felt, data : felt) -> (){
 }
 
 @event
-func CancelledAction(actionHash: felt, target: felt, selector: felt, calldata : felt, execution_time : felt) {
+func ExecutedAction(actionHash : felt, target : felt, data : felt) -> (){
 }
- 
+
     // # Initializer
     @external
     func initializer{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(   
@@ -80,25 +85,25 @@ func CancelledAction(actionHash: felt, target: felt, selector: felt, calldata : 
         minumumDelay: felt,
         maximumDelay: felt,
         delay: felt,
-        voting_delay: felt){
-        alloc_locals;
-        let is_delay_shorter_than_max: felt = is_le(minumumDelay, delay);
-        let is_delay_longer_than_max: felt = is_le(delay, maximumDelay);
-        with_attr error_message("DELAY_SHORTER_THAN_MINIMUM") {
-            assert is_delay_shorter_than_max = 1;
-        }
-        with_attr error_message("DELAY_LONGER_THAN_MAXIMUM") {
-            assert is_delay_longer_than_max = 1;
-        }
-        let (deployer) = get_caller_address();
-        Ownable.initializer(deployer);
-        GRACE_PERIOD.write(gracePeriod);
-        MINUMUM_DELAY.write(minumumDelay);
-        MAXIMUM_DELAY.write(maximumDelay);
-        DELAY.write(delay);
-        VOTING_DELAY.write(voting_delay);
-        GOVERNANCE_ADDRESS.write(governance_address);
-        return ();
+        voting_delay: felt,
+        deployer : felt){
+            alloc_locals;
+            let is_delay_shorter_than_max: felt = is_le(minumumDelay, delay);
+            let is_delay_longer_than_max: felt = is_le(delay, maximumDelay);
+            with_attr error_message("DELAY_SHORTER_THAN_MINIMUM") {
+                assert is_delay_shorter_than_max = 1;
+            }
+            with_attr error_message("DELAY_LONGER_THAN_MAXIMUM") {
+                assert is_delay_longer_than_max = 1;
+            }
+            Ownable.initializer(deployer);
+            GRACE_PERIOD.write(gracePeriod);
+            MINUMUM_DELAY.write(minumumDelay);
+            MAXIMUM_DELAY.write(maximumDelay);
+            DELAY.write(delay);
+            VOTING_DELAY.write(voting_delay);
+            GOVERNANCE_ADDRESS.write(governance_address);
+            return ();
     }
 
     // #Viewers
@@ -149,80 +154,132 @@ func CancelledAction(actionHash: felt, target: felt, selector: felt, calldata : 
         return (res,);
     }
 
-   
     // #Externals
-    @external
-    func executeTransaction{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        _proposal_id : felt, target_index : felt, calldata_size: felt, index : felt
-    ) {
-        alloc_locals;
-        onlyGovernance();
-        let governance_address : felt = GOVERNANCE_ADDRESS.read(); 
-        let (_calldata_data_len : felt, _calldata_data : felt*) = returnCalldata(_proposal_id, calldata_size, target_index, 0);
-        let target : felt = IDolvenGovernance.return_proposal_targets(governance_address, _proposal_id, target_index);
-        let selector : felt = IDolvenGovernance.return_proposal_selectors(governance_address, _proposal_id, target_index);
-   
-        if(index == calldata_size){
-        return();
-        }
-
-        let reversed_calldata : felt* = _calldata_data - _calldata_data_len;
-        
-        let response = call_contract(
-        contract_address=target,
-        function_selector=selector,
-        calldata_size=_calldata_data_len,
-        calldata=reversed_calldata,
-        );
-
-        executeTransaction(_proposal_id, target_index, calldata_size, index + 1);
-        return(); 
-    }
-   
 
     @external
     func cancelTransaction{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        proposal_target : felt, _proposal_selector : felt, _proposal_single_calldata : felt, executionTime : felt
+        _proposalId : felt, index : felt, execution_time : felt
     ) {
-        onlyGovernance();
+        _onlyGovernance();
+        let (governance) = GOVERNANCE_ADDRESS.read();
+      
+        let (proposal_execution_length) = IDolvenGovernance.returnExecutionLength(governance, _proposalId);
+        let (proposalTarget) = IDolvenGovernance.returnProposalTarget(governance, _proposalId, index);
+        let (proposalSelector) = IDolvenGovernance.returnProposalSelector(governance, _proposalId, index);
+        let (proposalCalldata) = IDolvenGovernance.returnProposalCalldata(governance, _proposalId, index);
 
-        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(executionTime, proposal_target);
-        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_selector);
-        let (action_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_single_calldata);
+        //pedersen hash
+        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(execution_time, proposalTarget);
+        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, proposalSelector);
+        let (action_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, proposalCalldata);
+       
 
-        _queuedTransactions.write(action_hash, FALSE);
-        CancelledAction.emit(actionHash=action_hash, target=proposal_target, selector=_proposal_selector, calldata=_proposal_single_calldata, execution_time=executionTime);
+        if(proposal_execution_length == index){
+        return();
+        }
+
+        QUEUED_TRANSACTIONS.write(action_hash, FALSE);
+        CancelledAction.emit(action_hash, proposalTarget, proposalCalldata);
+        cancelTransaction(_proposalId, index + 1, execution_time);
+        return();
+    }
+
+
+    @external
+    func queueTransaction{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+        _proposalId : felt, index : felt, execution_time : felt
+    ) {
+        _onlyGovernance();
+        let (time) = get_block_timestamp();
+        let _delay : felt = DELAY.read(); 
+        let delayedTime : felt = time + _delay;
+        let is_on_time : felt = is_le(delayedTime, time);
+        with_attr error_message("EXECUTION_TIME_UNDERESTIMATED") {
+            assert is_on_time = TRUE;
+        }
+        let (governance) = GOVERNANCE_ADDRESS.read();
+      
+        let (proposal_execution_length) = IDolvenGovernance.returnExecutionLength(governance, _proposalId);
+        let (proposalTarget) = IDolvenGovernance.returnProposalTarget(governance, _proposalId, index);
+        let (proposalSelector) = IDolvenGovernance.returnProposalSelector(governance, _proposalId, index);
+        let (proposalCalldata) = IDolvenGovernance.returnProposalCalldata(governance, _proposalId, index);
+
+        //pedersen hash
+        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(execution_time, proposalTarget);
+        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, proposalSelector);
+        let (action_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, proposalCalldata);
+       
+
+        if(proposal_execution_length == index){
+        return();
+        }
+
+        QUEUED_TRANSACTIONS.write(action_hash, TRUE);
+        QueuedAction.emit(action_hash, proposalTarget, proposalCalldata);
+        queueTransaction(_proposalId, index + 1, execution_time);
         return();
     }
 
     @external
-    func queueTransaction{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        proposal_target : felt, _proposal_selector : felt, _proposal_single_calldata : felt, executionTime : felt
-    ) {
-        onlyGovernance();
-        let (delay) = DELAY.read();
+    func executeTransaction{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+        _proposalId : felt, index : felt, execution_time : felt
+    ){
+        _onlyGovernance();
+
+        let (governance) = GOVERNANCE_ADDRESS.read();
+      
+        let (proposal_execution_length) = IDolvenGovernance.returnExecutionLength(governance, _proposalId);
+        let (proposalTarget) = IDolvenGovernance.returnProposalTarget(governance, _proposalId, index);
+        let (proposalSelector) = IDolvenGovernance.returnProposalSelector(governance, _proposalId, index);
+        let proposalCalldata : felt* = IDolvenGovernance.returnProposalCalldata(governance, _proposalId, index);
+
+        //pedersen hash
+        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(execution_time, proposalTarget);
+        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, proposalSelector);
+        let (action_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, proposalCalldata[0]);
+        
         let (time) = get_block_timestamp();
-        let delayed : felt = time + delay;
-        with_attr error_message("EXECUTION_TIME_UNDERESTIMATED") {
-            assert_nn_le(executionTime, delayed);
+
+        let is_queued : felt = QUEUED_TRANSACTIONS.read(action_hash);
+
+        with_attr error_message("ACTION_NOT_QUEUED") {
+            assert is_queued = TRUE;
         }
 
-        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(executionTime, proposal_target);
-        let (basic_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_selector);
-        let (action_hash) = hash2{hash_ptr=pedersen_ptr}(basic_hash, _proposal_single_calldata);
+        let _gracePeriod : felt = GRACE_PERIOD.read();
+        let graced_time : felt = _gracePeriod + time;
+        let _is_before_grace_period : felt = is_le(time, graced_time);
+        let is_after_execution_time : felt = is_le(execution_time, time); 
+        with_attr error_message("GRACE_PERIOD_FINISHED") {
+            assert _is_before_grace_period = TRUE;
+        }
 
-        _queuedTransactions.write(action_hash, TRUE);
-        QueuedAction.emit(actionHash=action_hash, target=proposal_target, selector=_proposal_selector, calldata=_proposal_single_calldata, execution_time=executionTime);
+        with_attr error_message("TIMELOCK_NOT_FINISHED") {
+            assert is_after_execution_time = TRUE;
+        }
+
+        if(proposal_execution_length == index){
+        return();
+        }
+
+        let response = call_contract(
+        contract_address=proposalTarget,
+        function_selector=proposalSelector,
+        calldata_size=1,
+        calldata=proposalCalldata,
+        );
+
+        QUEUED_TRANSACTIONS.write(action_hash, FALSE);
+        ExecutedAction.emit(action_hash, proposalTarget, proposalCalldata[0]);
+        executeTransaction(_proposalId, index + 1, execution_time);
         return();
     }
-
-
 
     @external
     func changeDelay{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
         delay_duration: felt
     ) -> (delay_duration: felt) {
-        check_duration(delay_duration);
+        _validateDelay(delay_duration);
         Ownable.assert_only_owner();
         DELAY.write(delay_duration);
         return (delay_duration,);
@@ -238,15 +295,6 @@ func CancelledAction(actionHash: felt, target: felt, selector: felt, calldata : 
     }
 
     @external
-    func changeGracePeriod{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        grace_time: felt
-    ) -> (grace_time: felt) {
-        Ownable.assert_only_owner();
-        GRACE_PERIOD.write(grace_time);
-        return (grace_time,);
-    }
-
-    @external
     func changeVotingDuration{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
         voting_duration: felt
     ) -> (voting_duration: felt) {
@@ -257,38 +305,8 @@ func CancelledAction(actionHash: felt, target: felt, selector: felt, calldata : 
 
     // #Internal Functions
 
-     func returnCalldata{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        _proposalId: felt, loop_size: felt, _targetId: felt, index : felt
-    ) -> (calldataArray_len : felt, calldataArray : felt*) {
-        alloc_locals;
-        let (governance_address) = GOVERNANCE_ADDRESS.read(); 
-        let single_calldata : felt = IDolvenGovernance.return_proposal_calldatas(governance_address, _proposalId, _targetId, index);
-        
-        if(index == loop_size){
-        let calldata_array : felt* = alloc();
-        return(0, calldata_array);
-        }
-
-        let (_calldataArray_len : felt, _calldataArray : felt*) = returnCalldata(_proposalId, loop_size, _targetId, index + 1);
-        assert [_calldataArray] = single_calldata;
-        return(_calldataArray_len + 1, _calldataArray + 1);
-    }
-
     // # Modifier
-
-    func onlyGovernance{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}() {
-        let (msg_sender) = get_caller_address();
-        with_attr error_message("ADDRESS_CANNOT_BE_ZERO") {
-            assert_not_zero(msg_sender);
-        }
-        let (governance_address) = GOVERNANCE_ADDRESS.read();
-        with_attr error_message("CALLER_MUST_BE_GOVERNANCE") {
-            assert governance_address = msg_sender;
-        }
-        return();
-    }
-
-    func check_duration{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    func _validateDelay{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
         duration: felt
     ) {
         alloc_locals;
@@ -303,4 +321,18 @@ func CancelledAction(actionHash: felt, target: felt, selector: felt, calldata : 
             assert is_delay_longer_than_max = 1;
         }
         return ();
+    }
+
+    @external
+    func _onlyGovernance{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+    ) {
+        let (msg_sender) = get_caller_address();
+            with_attr error_message("ONLY_GOVERNANCE_CAN_EXECUTE") {
+            assert_not_zero(msg_sender);
+        }
+        let (governance_address) = GOVERNANCE_ADDRESS.read();
+           with_attr error_message("ONLY_GOVERNANCE_CAN_EXECUTE") {
+            assert governance_address = msg_sender;
+        }
+        return();
     }
