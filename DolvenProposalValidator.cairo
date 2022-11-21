@@ -28,6 +28,7 @@ from contracts.openzeppelin.security.pausable import Pausable
 from contracts.openzeppelin.security.reentrancy_guard import ReentrancyGuard
 from contracts.Interfaces.IDolvenGovernance import IDolvenGovernance
 from contracts.Interfaces.IDolvenVault import IDolvenVault
+from contracts.Interfaces.ITicketManager import ITicketManager
 
 const ONE_HUNDRED_WITH_PRECISION = 10000;
 // percentes should be multiplied with 100
@@ -41,6 +42,10 @@ func VOTE_DIFFERENTIAL() -> (res: Uint256) {
 }
 
 @storage_var
+func TICKET_MANAGER() -> (res: felt) {
+}
+
+@storage_var
 func MINIMUM_QUORUM() -> (res: Uint256) {
 }
 
@@ -50,6 +55,14 @@ func VOTING_TYPE() -> (res: felt) {
 // Type 0 == Every user has equal voting power
 // Type 1 == Every user has different voting power
 
+    @external
+    func setTicketManager{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+        ticketManager : felt
+    ) {
+        Ownable.assert_only_owner();
+        TICKET_MANAGER.write(ticketManager);
+        return();
+    }
 
     @external
     func initializer_validator{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
@@ -58,7 +71,9 @@ func VOTING_TYPE() -> (res: felt) {
         _VOTE_DIFFERENTIAL: Uint256,
         _MINIMUM_QUORUM: Uint256,
         _VOTING_TYPE: felt,
+        deployer : felt
     ) {
+        Ownable.initializer(deployer);
         MINIMUM_QUORUM.write(_MINIMUM_QUORUM);
         VOTE_DIFFERENTIAL.write(_VOTE_DIFFERENTIAL);
         PROPOSITION_THRESHOLD.write(_PROPOSITION_THRESHOLD);
@@ -68,13 +83,6 @@ func VOTING_TYPE() -> (res: felt) {
 
     // #Viewers
 
-    @view
-    func validateCreatorOfProposal{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        strategy: felt, user_account: felt
-    ) -> (is_user_valid: felt) {
-        let result: felt = isPropositionPowerEnough(strategy, user_account);
-        return (result,);
-    }
 
     @view
     func checkProposalType{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
@@ -93,25 +101,22 @@ func VOTING_TYPE() -> (res: felt) {
 
     @view
     func getVotingPower{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        strategy: felt, user_account: felt
-    ) -> (user_vote_power: Uint256) {
+        user_account: felt, time : felt
+    ) -> (user_vote_power: felt) {
         alloc_locals;
         let _voting_type: felt = VOTING_TYPE.read();
         if (_voting_type == 0) {
-            let zero_as_uint256: Uint256 = Uint256(0, 0);
-            let (time) = get_block_timestamp();
-            let user_ticket_count: Uint256 = IDolvenVault.get_userTicketCount(
-                strategy, user_account, time
+            let _ticketManager : felt = TICKET_MANAGER.read();
+            let user_ticket_count: felt = ITicketManager._checkpointsLookup(
+                _ticketManager, time, user_account, 1 
             );
-            let res: felt = uint256_lt(zero_as_uint256, user_ticket_count);
+            let res: felt = is_le(1, user_ticket_count);
             with_attr error_message("DolvenValidator::getVotingPower TICKET_AMOUNT_CANNOT_BE_ZERO") {
-                assert res = 1;
+                assert res = TRUE;
             }
             return (user_ticket_count,);
         } else {
-            let one: felt = 1;
-            let one_as_uint256: Uint256 = felt_to_uint256(one);
-            return (one_as_uint256,);
+            return (1,);
         }
     }
 
@@ -132,14 +137,24 @@ func VOTING_TYPE() -> (res: felt) {
 
     @view
     func get_min_votingPowerNeeded{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        voting_supply: Uint256
-    ) -> (min_power: Uint256) {
+        voting_supply: felt
+    ) -> (min_power: felt) {
         alloc_locals;
-        let _MINIMUM_QUORUM: Uint256 = MINIMUM_QUORUM.read();
-        let min_power: Uint256 = SafeUint256.mul(voting_supply, _MINIMUM_QUORUM);
-        let percent_base: Uint256 = felt_to_uint256(ONE_HUNDRED_WITH_PRECISION);
-        let min_power: Uint256 = SafeUint256.div_rem(min_power, percent_base);
+        let _MINIMUM_QUORUM: felt = MINIMUM_QUORUM.read();
+        let _min_power: felt = voting_supply * _MINIMUM_QUORUM;
+        let (min_power: felt, _) = unsigned_div_rem(_min_power, ONE_HUNDRED_WITH_PRECISION);
         return (min_power,);
+    }
+
+    // # External functions
+
+    @external
+    func changeVotingType{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
+        type : felt
+    ) {
+        Ownable.assert_only_owner();
+        VOTING_TYPE.write(type);
+        return();
     }
 
     // # Internal Functions
@@ -148,22 +163,21 @@ func VOTING_TYPE() -> (res: felt) {
         strategy: felt, proposal_id: felt
     ) -> (res: felt) {
         alloc_locals;
-        let _vote_differential: Uint256 = VOTE_DIFFERENTIAL.read();
+        let _vote_differential: felt = VOTE_DIFFERENTIAL.read();
         let (proposal_details) = IDolvenGovernance.returnProposalByNonce(strategy, proposal_id);
         let (time) = get_block_timestamp();
-        let voting_supply: Uint256 = IDolvenVault.get_totalLockedTicket_byTime(
-            proposal_details.strategy, time
+        let _ticketManager : felt = TICKET_MANAGER.read();
+        let voting_supply: felt = ITicketManager._checkpointsLookup(
+            _ticketManager, 0, proposal_details.startTimestamp, 0
         );
         // #How much percent of total votes is belong to "for"
-        let percent_base: Uint256 = felt_to_uint256(ONE_HUNDRED_WITH_PRECISION);
-        let for_votes_value: Uint256 = SafeUint256.mul(proposal_details.forVotes, percent_base);
-        let for_votes_value: Uint256 = SafeUint256.div_rem(for_votes_value, voting_supply);
+        let _for_votes_value: felt = proposal_details.forVotes * ONE_HUNDRED_WITH_PRECISION;
+        let (for_votes_value : felt, _ ) = unsigned_div_rem(_for_votes_value, voting_supply);
 
-        let percent_base: Uint256 = felt_to_uint256(ONE_HUNDRED_WITH_PRECISION);
-        let against_votes: Uint256 = SafeUint256.mul(proposal_details.againstVotes, percent_base);
-        let against_votes: Uint256 = SafeUint256.div_rem(against_votes, voting_supply);
-        let against_votes: Uint256 = SafeUint256.add(against_votes, _vote_differential);
-        let is_valid: felt = uint256_lt(against_votes, for_votes_value);
+        let __against_votes: felt = proposal_details.againstVotes * ONE_HUNDRED_WITH_PRECISION;
+        let (_against_votes: felt, _) = unsigned_div_rem(__against_votes, voting_supply);
+        let against_votes: felt = _against_votes + _vote_differential;
+        let is_valid: felt = is_le(against_votes + 1, for_votes_value);
         return (is_valid,);
     }
 
@@ -173,30 +187,15 @@ func VOTING_TYPE() -> (res: felt) {
         alloc_locals;
         let (proposal_details) = IDolvenGovernance.returnProposalByNonce(strategy, proposal_id);
         let (time) = get_block_timestamp();
-        let voting_supply: Uint256 = IDolvenVault.get_totalLockedTicket_byTime(
-            proposal_details.strategy, time
+        let _ticketManager : felt = TICKET_MANAGER.read();
+        let voting_supply: felt = ITicketManager._checkpointsLookup(
+            _ticketManager, 0, proposal_details.startTimestamp, 0
         );
-        let min_votingPowerNeeded: Uint256 = get_min_votingPowerNeeded(voting_supply);
-        let is_valid: felt = uint256_lt(min_votingPowerNeeded, proposal_details.forVotes);
+        let min_votingPowerNeeded: felt = get_min_votingPowerNeeded(voting_supply);
+        let is_valid: felt = is_le(min_votingPowerNeeded + 1, proposal_details.forVotes);
         return (is_valid,);
     }
-
-    func isPropositionPowerEnough{syscall_ptr: felt*, pedersen_ptr: HashBuiltin*, range_check_ptr}(
-        strategy: felt, user_account: felt
-    ) -> (res: felt) {
-        alloc_locals;
-        let (time) = get_block_timestamp();
-        let user_ticket_count: Uint256 = IDolvenVault.get_userTicketCount(strategy, user_account, time);
-        let total_locked_ticket_count: Uint256 = IDolvenVault.get_totalLockedTicket_byTime(
-            strategy, time
-        );
-        let _minimumPropositionPowerNeeded: Uint256 = getMinimumPropositionPowerNeeded(
-            total_locked_ticket_count
-        );
-        let is_user_valid: felt = uint256_lt(_minimumPropositionPowerNeeded, user_ticket_count);
-        return (is_user_valid,);
-    }
-
+    
     func felt_to_uint256{range_check_ptr}(x) -> (uint_x: Uint256) {
         let (high, low) = split_felt(x);
         return (Uint256(low=low, high=high),);
